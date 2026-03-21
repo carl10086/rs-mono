@@ -1,0 +1,19 @@
+# Rust
+/target
+**/target/
+Cargo.lock
+**/Cargo.lock
+
+# refer 目录
+refer/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
