@@ -600,15 +600,34 @@ impl Provider for KimiProvider {
                                     }
                                     KimiStreamEvent::ContentBlockStop(inner) => {
                                         debug!(index = inner.index, "ContentBlockStop");
-                                        if let Some(ContentBlock::ToolCall(tc)) = partial.content.get_mut(inner.index) {
-                                            debug!(id = %tc.id, name = %tc.name, args = %current_tool_json, has_reasoning = tc.reasoning_content.is_some(), "ToolCallEnd");
-                                            let _args_str = current_tool_json.clone();
-                                            tc.arguments = parse_streaming_json(&current_tool_json);
-
-                                            let _ = tx.send(Ok(StreamEvent::ToolCallEnd {
-                                                content_index: inner.index,
-                                                tool_call: tc.clone(),
-                                            })).await;
+                                        if inner.index < partial.content.len() {
+                                            let block_type = format!("{:?}", partial.content[inner.index]);
+                                            match block_type.as_str() {
+                                                s if s.contains("Thinking") => {
+                                                    if let Some(ContentBlock::Thinking(t)) = partial.content.get(inner.index) {
+                                                        debug!(thinking_len = t.thinking.len(), "ThinkingEnd");
+                                                        let thinking_content = t.thinking.clone();
+                                                        let _ = tx.send(Ok(StreamEvent::ThinkingEnd {
+                                                            content_index: inner.index,
+                                                            content: thinking_content,
+                                                        })).await;
+                                                    }
+                                                }
+                                                s if s.contains("ToolCall") => {
+                                                    if let Some(ContentBlock::ToolCall(tc)) = partial.content.get(inner.index) {
+                                                        debug!(id = %tc.id, name = %tc.name, args = %current_tool_json, has_reasoning = tc.reasoning_content.is_some(), "ToolCallEnd");
+                                                        let tc_clone = tc.clone();
+                                                        if let Some(ContentBlock::ToolCall(tc_mut)) = partial.content.get_mut(inner.index) {
+                                                            tc_mut.arguments = parse_streaming_json(&current_tool_json);
+                                                        }
+                                                        let _ = tx.send(Ok(StreamEvent::ToolCallEnd {
+                                                            content_index: inner.index,
+                                                            tool_call: tc_clone,
+                                                        })).await;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
                                         }
                                     }
                                     KimiStreamEvent::MessageDelta(inner) => {

@@ -18,13 +18,13 @@ const RED: &str = "\x1b[31m";
 const MAGENTA: &str = "\x1b[35m";
 
 struct CliHandler {
-    current_tool: Arc<Mutex<Option<String>>>,
+    thinking_buffer: Arc<Mutex<String>>,
 }
 
 impl CliHandler {
     fn new() -> Self {
         Self {
-            current_tool: Arc::new(Mutex::new(None)),
+            thinking_buffer: Arc::new(Mutex::new(String::new())),
         }
     }
 }
@@ -42,60 +42,52 @@ impl EventHandler for CliHandler {
             }
             AgentEvent::TextEnd { .. } => {}
             AgentEvent::ThinkingStart { content_index: _ } => {
-                print!("{}  ├─{} thinking", DIM, MAGENTA);
+                self.thinking_buffer.lock().unwrap().clear();
             }
             AgentEvent::ThinkingDelta { delta, .. } => {
-                let truncated = delta.chars().take(15).collect::<String>();
-                print!("{}", truncated);
+                self.thinking_buffer.lock().unwrap().push_str(&delta);
             }
-            AgentEvent::ThinkingEnd {
-                content_index: _,
-                content: _,
-            } => {
-                println!("{} done{}", GREEN, RESET);
-            }
-            AgentEvent::ToolCallStart { content_index: _ } => {
-                print!("{}  ├─{} tool_call", DIM, YELLOW);
-            }
-            AgentEvent::ToolCallDelta { delta, .. } => {
-                print!("{}", delta);
-            }
-            AgentEvent::ToolExecutionStart {
-                tool_name,
-                args,
-                tool_call_id,
-            } => {
-                *self.current_tool.lock().unwrap() = Some(tool_name.clone());
-                println!("{}  ├─{} Called tool {}{}", DIM, YELLOW, tool_name, RESET);
-                println!("{}  │   └─{} input: {}{}", DIM, DIM, args, RESET);
-                let _ = tool_call_id;
-            }
-            AgentEvent::ToolExecutionEnd {
-                tool_name,
-                is_error,
-                ..
-            } => {
-                if *is_error {
-                    println!("{}  │   └─{} error{}", DIM, RED, RESET);
-                } else {
-                    println!("{}  │   └─{} success{}", DIM, GREEN, RESET);
+            AgentEvent::ThinkingEnd { content_index: _, content: _ } => {
+                let thinking = self.thinking_buffer.lock().unwrap().clone();
+                let cleaned = thinking.replace('\n', " ").chars().take(60).collect::<String>();
+                if !cleaned.is_empty() {
+                    println!("{}  ├─{} 💭 {}{}", DIM, MAGENTA, cleaned, RESET);
                 }
-                *self.current_tool.lock().unwrap() = None;
-                let _ = tool_name;
+            }
+            AgentEvent::ToolCallStart { content_index: _ } => {}
+            AgentEvent::ToolCallDelta { delta: _, content_index: _ } => {}
+            AgentEvent::ToolExecutionStart { tool_name, args, tool_call_id: _ } => {
+                print!("\n");
+                if let Some(obj) = args.as_object() {
+                    let args_str: Vec<String> = obj.iter()
+                        .filter(|(k, _)| *k != "_partial")
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect();
+                    println!("{}  ├─{} 🔧 {} ({}){}", DIM, YELLOW, tool_name, args_str.join(", "), RESET);
+                } else {
+                    println!("{}  ├─{} 🔧 {}(){}", DIM, YELLOW, tool_name, RESET);
+                }
+            }
+            AgentEvent::ToolExecutionEnd { tool_name: _, is_error, result, .. } => {
+                if *is_error {
+                    println!("{}  │   └─{} ✗ error{}", DIM, RED, RESET);
+                } else {
+                    let title = result.get("title").and_then(|t| t.as_str()).unwrap_or("done");
+                    println!("{}  │   └─{} ✓ {} {}", DIM, GREEN, title, RESET);
+                }
             }
             AgentEvent::TurnEnd { tool_results, .. } => {
                 for tr in tool_results {
                     for block in &tr.content {
                         if let ContentBlock::Text(t) = block {
-                            let first_line = t
-                                .text
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .chars()
-                                .take(80)
-                                .collect::<String>();
-                            println!("{}  │   └─{} result: {}{}", DIM, GREEN, first_line, RESET);
+                            println!("\n{}  ├─{} 📤 Output:{}", DIM, GREEN, RESET);
+                            let lines: Vec<&str> = t.text.lines().take(5).collect();
+                            for line in lines {
+                                println!("{}  │   │{} {}", DIM, RESET, line);
+                            }
+                            if t.text.lines().count() > 5 {
+                                println!("{}  │   ... ({} more lines){}", DIM, t.text.lines().count() - 5, RESET);
+                            }
                         }
                     }
                 }
@@ -137,9 +129,7 @@ async fn main() -> Result<()> {
     )])];
 
     match agent.run(prompts).await {
-        Ok(messages) => {
-            println!("\n{}Final messages count: {}{}", DIM, messages.len(), RESET);
-        }
+        Ok(_messages) => {}
         Err(e) => {
             eprintln!("{}Error: {}{}", RED, e, RESET);
         }

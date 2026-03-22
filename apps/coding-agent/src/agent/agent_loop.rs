@@ -1,3 +1,7 @@
+//! Agent 主循环
+//! 
+//! 负责管理 LLM 对话、工具执行和事件广播。
+
 use super::executor::{Tool, ToolExecutor};
 use super::types::{AgentEvent, AgentState, ToolCall, ToolContext};
 use super::event::{EventBroadcaster, EventHandler, SubscriptionId};
@@ -6,6 +10,10 @@ use ai::{client, StreamEvent};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use std::sync::Arc;
+
+// ============================================================================
+// 配置
+// ============================================================================
 
 /// AgentLoop 配置
 #[derive(Clone)]
@@ -19,6 +27,7 @@ pub struct AgentLoopConfig {
 }
 
 impl AgentLoopConfig {
+    /// 使用指定模型创建配置
     pub fn new(model: ai::Model) -> Self {
         Self {
             model,
@@ -27,19 +36,26 @@ impl AgentLoopConfig {
         }
     }
 
+    /// 设置系统提示词
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
         self
     }
 
+    /// 启用推理
     pub fn with_reasoning(mut self, reasoning: ai::ThinkingLevel) -> Self {
         self.reasoning = Some(reasoning);
         self
     }
 }
 
+// ============================================================================
+// Agent 主循环
+// ============================================================================
+
 /// Agent 主循环
-/// 负责管理 LLM 对话、工具执行和事件广播
+/// 
+/// 管理 LLM 对话、工具执行和事件广播。
 pub struct AgentLoop {
     /// 配置
     config: AgentLoopConfig,
@@ -82,11 +98,13 @@ impl AgentLoop {
         self.broadcaster.broadcast(event);
     }
 
+    /// 设置初始状态
     pub fn with_state(mut self, state: AgentState) -> Self {
         self.state = state;
         self
     }
 
+    /// 注册工具
     pub fn with_tools<T: Tool + 'static>(mut self, tools: Vec<T>) -> Self {
         for tool in tools {
             self.state.tools.push(tool.define());
@@ -95,8 +113,10 @@ impl AgentLoop {
         self
     }
 
-    /// 运行 Agent，处理 prompts 并返回最终消息列表
-    /// 事件通过 broadcaster 实时广播给所有订阅的处理器
+    /// 运行 Agent
+    /// 
+    /// 处理 prompts 并返回最终消息列表。
+    /// 事件通过 broadcaster 实时广播给所有订阅的处理器。
     pub async fn run(&mut self, prompts: Vec<Message>) -> Result<Vec<Message>> {
         let abort = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session_id = "session-1".to_string();
@@ -108,6 +128,7 @@ impl AgentLoop {
         self.broadcast(&AgentEvent::AgentStart);
         self.broadcast(&AgentEvent::TurnStart);
 
+        // 广播输入消息
         for prompt in &prompts {
             self.broadcast(&AgentEvent::MessageStart { 
                 message: prompt.clone(), 
@@ -143,6 +164,7 @@ impl AgentLoop {
         }
     }
 
+    /// 主循环实现
     async fn run_loop(
         mut messages: Vec<Message>,
         tools: Vec<super::types::ToolDefine>,
@@ -155,6 +177,7 @@ impl AgentLoop {
         broadcaster: &EventBroadcaster,
     ) -> Result<Vec<Message>> {
         loop {
+            // 构建上下文
             let system = if system_prompt.is_empty() {
                 None
             } else {
@@ -180,9 +203,11 @@ impl AgentLoop {
                 context = context.with_tools(ai_tools);
             }
 
+            // 流式调用模型
             let mut stream = client::stream(&config.model, &context).await?;
             let mut partial_message: Option<Message> = None;
 
+            // 处理流式响应
             while let Some(result) = stream.next().await {
                 if abort.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err(anyhow!("Aborted"));
@@ -191,7 +216,10 @@ impl AgentLoop {
                 let event = result.map_err(|e| anyhow!("Stream error: {}", e))?;
 
                 match event {
+                    // 模型开始响应
                     StreamEvent::Start { .. } => {}
+                    
+                    // 文本内容开始
                     StreamEvent::TextStart { .. } => {
                         if partial_message.is_none() {
                             let msg = Message {
@@ -208,6 +236,8 @@ impl AgentLoop {
                             message: partial_message.clone().unwrap() 
                         });
                     }
+                    
+                    // 文本片段
                     StreamEvent::TextDelta { delta, content_index } => {
                         if let Some(ref mut msg) = partial_message {
                             for block in &mut msg.content {
@@ -221,6 +251,8 @@ impl AgentLoop {
                             delta: delta.clone() 
                         });
                     }
+                    
+                    // 文本结束
                     StreamEvent::TextEnd { content_index, content: _ } => {
                         let _ = broadcaster.broadcast(&AgentEvent::TextEnd { 
                             content_index,
@@ -230,6 +262,8 @@ impl AgentLoop {
                             message: partial_message.clone().unwrap() 
                         });
                     }
+                    
+                    // 思考开始
                     StreamEvent::ThinkingStart { content_index } => {
                         if partial_message.is_none() {
                             let msg = Message {
@@ -251,6 +285,8 @@ impl AgentLoop {
                             content_index 
                         });
                     }
+                    
+                    // 思考片段
                     StreamEvent::ThinkingDelta { delta, content_index } => {
                         if let Some(ref mut msg) = partial_message {
                             if let Some(ContentBlock::Thinking(t)) = msg.content.last_mut() {
@@ -262,12 +298,16 @@ impl AgentLoop {
                             delta: delta.clone() 
                         });
                     }
+                    
+                    // 思考结束
                     StreamEvent::ThinkingEnd { content_index, content: _ } => {
                         let _ = broadcaster.broadcast(&AgentEvent::ThinkingEnd { 
                             content_index,
                             content: partial_message.clone().unwrap()
                         });
                     }
+                    
+                    // 工具调用开始
                     StreamEvent::ToolCallStart { content_index } => {
                         if partial_message.is_none() {
                             let msg = Message {
@@ -290,6 +330,8 @@ impl AgentLoop {
                             content_index 
                         });
                     }
+                    
+                    // 工具调用参数片段
                     StreamEvent::ToolCallDelta { delta, content_index } => {
                         if let Some(ref mut msg) = partial_message {
                             for block in &mut msg.content {
@@ -308,6 +350,8 @@ impl AgentLoop {
                             delta: delta.clone() 
                         });
                     }
+                    
+                    // 工具调用结束
                     StreamEvent::ToolCallEnd { content_index, tool_call } => {
                         if let Some(ref mut msg) = partial_message {
                             if let Some(ContentBlock::ToolCall(tc)) =
@@ -328,6 +372,8 @@ impl AgentLoop {
                             tool_call: agent_tool_call,
                         });
                     }
+                    
+                    // 流式响应结束
                     StreamEvent::Done { reason: _, message } => {
                         let msg: Message = Message {
                             role: message.role,
@@ -338,6 +384,8 @@ impl AgentLoop {
                         partial_message = Some(msg);
                         break;
                     }
+                    
+                    // 流式响应错误
                     StreamEvent::Error { reason: _, error } => {
                         let error_msg = Message {
                             role: ai::types::Role::Assistant,
@@ -360,6 +408,7 @@ impl AgentLoop {
                 }
             };
 
+            // 检查是否需要执行工具
             let has_more_tool_calls = message.content.iter()
                 .any(|c| matches!(c, ContentBlock::ToolCall(_)));
 
@@ -384,6 +433,7 @@ impl AgentLoop {
                     })
                     .collect();
 
+                // 广播工具执行开始事件
                 for tool_call in &tool_calls {
                     let _ = broadcaster.broadcast(&AgentEvent::ToolExecutionStart {
                         tool_call_id: tool_call.id.clone(),
@@ -392,11 +442,12 @@ impl AgentLoop {
                     });
                 }
 
+                // 执行工具
                 match executor.execute(tool_calls.clone(), ctx).await {
                     Ok(results) => {
                         let mut tool_results = Vec::new();
-                        // 关键修复：先 push assistant message，再 push tool_result
-                        // 这样消息顺序才是 [user, assistant, tool_result] 而不是 [user, tool_result, assistant]
+                        // 重要：先推送 assistant message，再推送 tool_result
+                        // 这样消息顺序才是 [user, assistant, tool_result]
                         messages.push(message.clone());
                         
                         for (i, result) in results.into_iter().enumerate() {
@@ -436,6 +487,7 @@ impl AgentLoop {
                     }
                 }
             } else {
+                // 没有更多工具调用，返回结果
                 let _ = broadcaster.broadcast(&AgentEvent::TurnEnd {
                     message: message.clone(),
                     tool_results: vec![],

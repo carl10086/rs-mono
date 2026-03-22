@@ -1,3 +1,7 @@
+//! Bash 工具
+//! 
+//! 在 Agent 环境中执行 Bash 命令。
+
 use crate::agent::{Tool, ToolContext, ToolResult};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -6,41 +10,58 @@ use std::process::Stdio;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
+// 默认命令超时时间：120 秒
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
+/// Bash 工具参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BashToolArgs {
+    /// 要执行的命令
     pub command: String,
+    /// 命令用途描述（5-10 个词）
     pub description: String,
+    /// 超时时间（毫秒），默认 120000
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// 工作目录
     #[serde(default)]
     pub workdir: Option<String>,
 }
 
+/// Bash 工具
+/// 
+/// 允许 Agent 执行 Bash 命令。
 pub struct BashTool;
 
 impl BashTool {
+    /// 创建新的 Bash 工具实例
     pub fn new() -> Self {
         Self
     }
 
+    /// 执行 Bash 命令
+    /// 
+    /// 返回 (输出, 是否超时, 退出码)
     async fn run_command(
         command: &str,
         workdir: Option<&str>,
         timeout_ms: u64,
     ) -> Result<(String, Option<bool>, i32)> {
+        // 构建命令
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(command);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // 设置工作目录
         if let Some(dir) = workdir {
             cmd.current_dir(dir);
         }
 
+        // 启动进程
         let child = cmd.spawn()?;
 
+        // 设置超时
         let timeout_duration = Duration::from_millis(timeout_ms);
 
         let result = timeout(timeout_duration, async {
@@ -60,8 +81,10 @@ impl BashTool {
         })
         .await;
 
+        // 处理结果
         match result {
             Ok(Ok((stdout, stderr, exit_code))) => {
+                // 合并 stdout 和 stderr
                 let combined = if stderr.is_empty() {
                     stdout
                 } else {
@@ -69,7 +92,8 @@ impl BashTool {
                 };
                 Ok((combined, None, exit_code))
             }
-            Ok(Err(e)) => Err(anyhow!("Command execution error: {}", e)),
+            Ok(Err(e)) => Err(anyhow!("命令执行错误: {}", e)),
+            // 超时
             Err(_) => Ok((String::new(), Some(true), -1)),
         }
     }
@@ -85,19 +109,19 @@ impl Tool for BashTool {
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The bash command to execute"
+                        "description": "要执行的 Bash 命令"
                     },
                     "description": {
                         "type": "string",
-                        "description": "A brief description of the command (5-10 words)"
+                        "description": "命令用途简述（5-10 个词）"
                     },
                     "timeout": {
                         "type": "number",
-                        "description": "Optional timeout in milliseconds (default 120000)"
+                        "description": "超时时间（毫秒），默认 120000"
                     },
                     "workdir": {
                         "type": "string",
-                        "description": "Optional working directory"
+                        "description": "工作目录"
                     }
                 },
                 "required": ["command", "description"]
@@ -113,7 +137,7 @@ impl Tool for BashTool {
         let args: Result<BashToolArgs, _> = serde_json::from_value(args);
 
         Box::pin(async move {
-            let args = args.map_err(|e| anyhow!("Invalid args: {}", e))?;
+            let args = args.map_err(|e| anyhow!("参数无效: {}", e))?;
 
             let timeout_ms = args.timeout.unwrap_or(DEFAULT_TIMEOUT_MS);
             let workdir = args.workdir.as_deref();

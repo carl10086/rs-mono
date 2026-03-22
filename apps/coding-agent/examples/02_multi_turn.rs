@@ -49,7 +49,7 @@ impl EventHandler for CliHandler {
             }
             AgentEvent::MessageStart { .. } => {}
             AgentEvent::TextDelta { delta, .. } => {
-                print!("{}  │   └─{} {}", DIM, GREEN, delta);
+                print!("{}", delta);
             }
             AgentEvent::TextEnd { .. } => {
                 println!();
