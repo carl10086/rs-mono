@@ -1,0 +1,13 @@
+Execute a bash command.
+
+Usage:
+- The command parameter is the bash command to execute.
+- The description parameter is a brief description of the command (5-10 words).
+- The timeout parameter is optional, default is 120000ms (2 minutes).
+- The workdir parameter is optional, default is the project directory.
+- Use this tool for commands that cannot be expressed using other tools.
+- Commands are executed with an absolute path, not a relative path.
+- Do not use cd to change the working directory - use the workdir parameter instead.
+- When using globs or patterns in commands, quote the path (e.g., "*.txt" not *.txt).
+- If a command times out, it will be terminated and the output up to that point will be returned.
+- Git commands should be safe: never force push, never skip hooks, do not amend commits unless explicitly requested.
