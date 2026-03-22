@@ -1,3 +1,7 @@
+//! 文件写入工具
+//! 
+//! 支持创建新文件或覆盖已有文件，自动创建父目录。
+
 use crate::agent::{Tool, ToolContext, ToolResult};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -7,22 +11,32 @@ use std::pin::Pin;
 
 const DESCRIPTION: &str = include_str!("write.txt");
 
+// ============================================================================
+// 工具参数
+// ============================================================================
+
+/// 写入工具参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteToolArgs {
+    /// 文件路径（绝对或相对路径）
     #[serde(rename = "filePath")]
     pub file_path: String,
+    /// 文件内容
     pub content: String,
 }
 
+/// 写入工具
 pub struct WriteTool;
 
 impl WriteTool {
+    /// 创建新的写入工具实例
     pub fn new() -> Self {
         Self
     }
 
+    /// 解析路径，支持 ~ 展开和相对路径转换
     fn resolve_path(path: &str) -> PathBuf {
-        let path = if path.starts_with("~") {
+        let path = if path.starts_with('~') {
             dirs::home_dir()
                 .map(|home| path.replacen("~", &home.to_string_lossy(), 1))
                 .unwrap_or_else(|| path.to_string())
@@ -39,6 +53,7 @@ impl WriteTool {
         }
     }
 
+    /// 从路径中提取文件名作为标题
     fn extract_title(file_path: &str) -> String {
         Path::new(file_path)
             .file_name()
@@ -46,6 +61,7 @@ impl WriteTool {
             .unwrap_or_else(|| "file".to_string())
     }
 
+    /// 生成 Unified Diff 格式的差异
     fn generate_diff(old_content: &str, new_content: &str, file_path: &str) -> String {
         let diff = TextDiff::from_lines(old_content, new_content);
         diff.unified_diff()
@@ -53,6 +69,10 @@ impl WriteTool {
             .to_string()
     }
 }
+
+// ============================================================================
+// Tool trait 实现
+// ============================================================================
 
 impl Tool for WriteTool {
     fn define(&self) -> crate::agent::types::ToolDefine {
@@ -64,11 +84,11 @@ impl Tool for WriteTool {
                 "properties": {
                     "filePath": {
                         "type": "string",
-                        "description": "Path to the file to write (relative or absolute)"
+                        "description": "要写入的文件路径（绝对或相对路径）"
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write to the file"
+                        "description": "要写入的内容"
                     }
                 },
                 "required": ["filePath", "content"]
@@ -91,42 +111,43 @@ impl Tool for WriteTool {
                 anyhow!("Invalid path: {}", args.file_path)
             })?;
 
+            // 自动创建父目录
             if !parent_dir.exists() {
                 tokio::fs::create_dir_all(parent_dir).await.map_err(|e| {
                     anyhow!("Failed to create directory {:?}: {}", parent_dir, e)
                 })?;
             }
 
+            // 读取旧内容用于生成 diff
             let old_content = if file_path.exists() {
                 tokio::fs::read_to_string(&file_path).await.unwrap_or_default()
             } else {
                 String::new()
             };
 
+            // 生成差异（如果有旧内容）
             let diff = if old_content.is_empty() {
                 String::new()
             } else {
                 Self::generate_diff(&old_content, &args.content, &args.file_path)
             };
 
-            // TODO: FileTime verification
-            // - Check if file was read in this session before overwriting
-            // - Verify file hasn't been modified since last read
-            // - Reference: refer/opencode/packages/opencode/src/file/time.ts
+            // TODO: 文件时间戳验证
+            // - 检查文件是否在本次会话中读过
+            // - 验证文件自上次读取后是否被修改
 
+            // 写入文件
             tokio::fs::write(&file_path, &args.content).await.map_err(|e| {
                 anyhow!("Failed to write file: {}", e)
             })?;
 
-            // TODO: Event publishing
-            // - Publish File.Event.Edited
-            // - Publish FileWatcher.Event.Updated
-            // - Reference: refer/opencode/packages/opencode/src/tool/write.ts:45-51
+            // TODO: 事件发布
+            // - 发布 File.Event.Edited
+            // - 发布 FileWatcher.Event.Updated
 
-            // TODO: LSP integration
-            // - Call LSP.touchFile() to trigger re-diagnostics
-            // - Get and return LSP diagnostics in output
-            // - Reference: refer/opencode/packages/opencode/src/tool/write.ts:55-72
+            // TODO: LSP 集成
+            // - 调用 LSP.touchFile() 触发重新诊断
+            // - 在输出中返回 LSP 诊断信息
 
             let title = Self::extract_title(&args.file_path);
             let mut result = ToolResult::new(
@@ -134,6 +155,7 @@ impl Tool for WriteTool {
                 format!("Successfully wrote {} bytes to {}", args.content.len(), args.file_path),
             );
             
+            // 如果有 diff，添加到元数据
             if !diff.is_empty() {
                 result = result.with_metadata(serde_json::json!({
                     "diff": diff

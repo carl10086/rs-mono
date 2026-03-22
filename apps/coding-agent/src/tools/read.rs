@@ -1,3 +1,7 @@
+//! 文件读取工具
+//! 
+//! 支持读取文件和目录，支持二进制文件（图片、PDF）以 Base64 附件形式返回。
+
 use crate::agent::{Tool, ToolContext, ToolResult};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -6,23 +10,28 @@ use std::pin::Pin;
 
 const DESCRIPTION: &str = include_str!("read.txt");
 
-fn base64_encode(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(data)
-}
+// ============================================================================
+// 常量定义
+// ============================================================================
 
+/// 默认读取行数限制
 const DEFAULT_READ_LIMIT: usize = 2000;
+/// 单行最大长度
 const MAX_LINE_LENGTH: usize = 2000;
+/// 行截断后缀
 const MAX_LINE_SUFFIX: &str = "... (line truncated)";
+/// 文件大小限制：50KB
 const MAX_BYTES: usize = 50 * 1024;
 const MAX_BYTES_LABEL: &str = "50 KB";
 
+/// 二进制文件扩展名列表
 const BINARY_EXTENSIONS: &[&str] = &[
     ".zip", ".tar", ".gz", ".exe", ".dll", ".so", ".class", ".jar", ".war",
     ".7z", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods",
     ".odp", ".bin", ".dat", ".obj", ".o", ".a", ".lib", ".wasm", ".pyc", ".pyo",
 ];
 
+/// 图片扩展名到 MIME 类型的映射
 const IMAGE_MIME_TYPES: &[(&str, &str)] = &[
     (".png", "image/png"),
     (".jpg", "image/jpeg"),
@@ -31,6 +40,43 @@ const IMAGE_MIME_TYPES: &[(&str, &str)] = &[
     (".webp", "image/webp"),
 ];
 
+// ============================================================================
+// 工具参数
+// ============================================================================
+
+/// 读取工具参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadToolArgs {
+    /// 文件或目录路径
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    /// 起始行号（1-indexed）
+    pub offset: Option<usize>,
+    /// 最大读取行数
+    pub limit: Option<usize>,
+}
+
+/// 读取工具
+pub struct ReadTool;
+
+impl ReadTool {
+    /// 创建新的读取工具实例
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+/// Base64 编码
+fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// 根据扩展名获取 MIME 类型
 fn get_mime_type(path: &Path) -> Option<&'static str> {
     let ext = path.extension()
         .and_then(|e| e.to_str())
@@ -49,21 +95,22 @@ fn get_mime_type(path: &Path) -> Option<&'static str> {
     None
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadToolArgs {
-    #[serde(rename = "filePath")]
-    pub file_path: String,
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-}
-
-pub struct ReadTool;
-
-impl ReadTool {
-    pub fn new() -> Self {
-        Self
+/// 通过扩展名判断是否为二进制文件
+fn is_binary_by_extension(file_path: &Path) -> bool {
+    let ext = file_path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .map(|e| format!(".{}", e));
+    
+    match ext {
+        Some(ref ext) => BINARY_EXTENSIONS.contains(&ext.as_str()),
+        None => false,
     }
 }
+
+// ============================================================================
+// Tool trait 实现
+// ============================================================================
 
 impl Tool for ReadTool {
     fn define(&self) -> crate::agent::types::ToolDefine {
@@ -75,15 +122,15 @@ impl Tool for ReadTool {
                 "properties": {
                     "filePath": {
                         "type": "string",
-                        "description": "The absolute path to the file or directory to read"
+                        "description": "要读取的文件或目录路径"
                     },
                     "offset": {
                         "type": "number",
-                        "description": "The line number to start reading from (1-indexed)"
+                        "description": "起始行号（1-indexed）"
                     },
                     "limit": {
                         "type": "number",
-                        "description": "The maximum number of lines to read (defaults to 2000)"
+                        "description": "最大读取行数（默认 2000）"
                     }
                 },
                 "required": ["filePath"]
@@ -103,7 +150,7 @@ impl Tool for ReadTool {
         };
 
         Box::pin(async move {
-            let args = args.map_err(|e| anyhow!("Invalid args: {}", e))?;
+            let args = args.map_err(|e| anyhow!("参数无效: {}", e))?;
 
             let metadata = tokio::fs::metadata(&file_path).await?;
 
@@ -116,26 +163,20 @@ impl Tool for ReadTool {
     }
 }
 
-impl ReadTool {
-    fn is_binary_by_extension(file_path: &Path) -> bool {
-        let ext = file_path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-            .map(|e| format!(".{}", e));
-        
-        match ext {
-            Some(ref ext) => BINARY_EXTENSIONS.contains(&ext.as_str()),
-            None => false,
-        }
-    }
+// ============================================================================
+// 文件读取实现
+// ============================================================================
 
+impl ReadTool {
+    /// 读取文件内容
     async fn read_file(args: &ReadToolArgs) -> anyhow::Result<ToolResult> {
         let file_path = Path::new(&args.file_path);
 
         if !file_path.exists() {
-            return Err(anyhow!("File not found: {}", args.file_path));
+            return Err(anyhow!("文件不存在: {}", args.file_path));
         }
 
+        // 处理图片和 PDF（以 Base64 附件形式返回）
         if let Some(mime) = get_mime_type(file_path) {
             let bytes = tokio::fs::read(file_path).await?;
             let base64_data = base64_encode(&bytes);
@@ -152,10 +193,12 @@ impl ReadTool {
             .with_attachment(mime, base64_data));
         }
 
-        if Self::is_binary_by_extension(file_path) {
+        // 二进制文件不支持直接读取
+        if is_binary_by_extension(file_path) {
             return Err(anyhow!("Cannot read binary file: {}", args.file_path));
         }
 
+        // 文本文件：分批读取
         let file = tokio::fs::File::open(file_path).await?;
         use tokio::io::AsyncReadExt;
         let mut reader = tokio::io::BufReader::new(file);
@@ -183,6 +226,7 @@ impl ReadTool {
         let limit = args.limit.unwrap_or(DEFAULT_READ_LIMIT);
         let offset = args.offset.unwrap_or(1).saturating_sub(1);
 
+        // 构建带行号的输出
         let lines: Vec<String> = content_str
             .lines()
             .skip(offset)
@@ -246,11 +290,12 @@ impl ReadTool {
         })))
     }
 
+    /// 读取目录内容
     fn read_directory(args: &ReadToolArgs) -> anyhow::Result<ToolResult> {
         let file_path = Path::new(&args.file_path);
 
         if !file_path.exists() {
-            return Err(anyhow!("Directory not found: {}", args.file_path));
+            return Err(anyhow!("目录不存在: {}", args.file_path));
         }
 
         let mut entries: Vec<String> = std::fs::read_dir(file_path)?

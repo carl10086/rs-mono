@@ -1,3 +1,7 @@
+//! Glob 文件搜索工具
+//! 
+//! 使用 Glob 模式匹配查找文件。
+
 use crate::agent::{Tool, ToolContext, ToolResult};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -5,6 +9,10 @@ use std::path::Path;
 use std::pin::Pin;
 
 const DESCRIPTION: &str = include_str!("glob.txt");
+
+// ============================================================================
+// 工具参数
+// ============================================================================
 
 /// Glob 工具参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,14 +23,19 @@ pub struct GlobToolArgs {
     pub path: Option<String>,
 }
 
-/// Glob 工具 - 使用 glob crate 进行文件模式匹配
+/// Glob 工具
 pub struct GlobTool;
 
 impl GlobTool {
+    /// 创建新的 Glob 工具实例
     pub fn new() -> Self {
         Self
     }
 }
+
+// ============================================================================
+// Tool trait 实现
+// ============================================================================
 
 impl Tool for GlobTool {
     fn define(&self) -> crate::agent::types::ToolDefine {
@@ -34,11 +47,11 @@ impl Tool for GlobTool {
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "The glob pattern to match files against, e.g. '*.rs', '**/*.json', 'src/**/*.ts'"
+                        "description": "Glob 模式，如 '*.rs', '**/*.json', 'src/**/*.ts'"
                     },
                     "path": {
                         "type": "string",
-                        "description": "The directory to search in. If not specified, the current working directory will be used."
+                        "description": "搜索目录路径，未指定则使用当前工作目录"
                     }
                 },
                 "required": ["pattern"]
@@ -125,7 +138,7 @@ impl Tool for GlobTool {
                 output
             };
 
-            // 计算相对路径作为 title
+            // 计算相对路径作为标题
             let title = Path::new(&search_dir)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
